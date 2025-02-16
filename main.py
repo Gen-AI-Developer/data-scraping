@@ -15,6 +15,7 @@ Path("videos").mkdir(exist_ok=True)
 async def download_file(session, url, folder):
     """Download a file (image or video) to the specified folder"""
     try:
+        print(f"Downloading: {url}")
         async with session.get(url) as response:
             if response.status == 200:
                 filename = os.path.basename(urlparse(url).path)
@@ -24,6 +25,7 @@ async def download_file(session, url, folder):
                 filepath = os.path.join(folder, filename)
                 async with aiofiles.open(filepath, 'wb') as f:
                     await f.write(await response.read())
+                print(f"Successfully downloaded to: {filepath}")
                 return filepath
             else:
                 print(f"Failed to download {url}: Status {response.status}")
@@ -184,14 +186,9 @@ async def scrape_candidate_page(crawler, session, candidate_url):
     return cases
 
 async def scrape_case_details(soup, session):
-    """Extract all details from the company-details div"""
+    """Extract all details from the case page"""
     print("\n=== Starting Case Detail Extraction ===")
-    company_details = soup.find('div', class_='company-details')
-    if not company_details:
-        print("Warning: company-details div not found")
-        return None
     
-    print("Found company-details div")
     case_data = {
         'title': '',
         'info': '',
@@ -203,62 +200,82 @@ async def scrape_case_details(soup, session):
     }
     
     # Extract title and info
-    title_section = company_details.find('div', class_='title-body')
-    if title_section:
-        case_data['title'] = title_section.find('h1').text.strip() if title_section.find('h1') else ''
-        info_div = title_section.find('div', class_='info')
-        case_data['info'] = info_div.text.strip() if info_div else ''
-        print(f"Found title: {case_data['title']}")
-    else:
-        print("Warning: title-body not found")
+    title_and_info = soup.find('div', class_='title-and-info')
+    if title_and_info:
+        print("Found title and info section")
+        title = title_and_info.find('h1')
+        if title:
+            case_data['title'] = title.text.strip()
+            print(f"Title: {case_data['title']}")
+        
+        info = title_and_info.find('div', class_='info')
+        if info:
+            case_data['info'] = info.text.strip()
+            print(f"Info: {case_data['info']}")
     
     # Extract clinical information
-    clinical_section = company_details.find('div', class_='about-details')
-    if clinical_section:
-        clinical_info = clinical_section.find('p')
-        case_data['clinical_info'] = clinical_info.text.strip() if clinical_info else ''
-        print("Found clinical information")
-    else:
-        print("Warning: about-details not found")
+    about_details = soup.find('div', class_='about-details')
+    if about_details:
+        print("Found clinical information section")
+        clinical_info = about_details.find('p')
+        if clinical_info:
+            case_data['clinical_info'] = clinical_info.text.strip()
+            print(f"Clinical info: {case_data['clinical_info']}")
     
     # Extract patient details
-    patient_data = company_details.find('div', class_='patient-data')
+    patient_data = soup.find('div', class_='patient-data')
     if patient_data:
         print("Found patient data section")
-        for li in patient_data.find_all('li'):
-            key = li.find('span').text.strip().rstrip(':')
-            value = li.text.replace(li.find('span').text, '').strip()
-            case_data['patient_details'][key] = value
-            print(f"Found patient detail: {key}: {value}")
-    else:
-        print("Warning: patient-data not found")
+        for item in patient_data.find_all('li'):
+            label = item.find('span')
+            if label:
+                key = label.text.strip().rstrip(':')
+                value = item.text.replace(label.text, '').strip()
+                case_data['patient_details'][key] = value
+                print(f"Patient detail - {key}: {value}")
     
-    # Extract images and their captions
-    portfolio = company_details.find('div', class_='portfolio')
+    # Extract images and videos
+    portfolio = soup.find('div', class_='portfolio')
     if portfolio:
         print("Found portfolio section")
-        image_links = portfolio.find_all('a', href=True)
-        print(f"Found {len(image_links)} image links")
         
-        for img_link in image_links:
-            if 'jpg' in img_link['href'].lower() or 'png' in img_link['href'].lower():
-                img_url = urljoin("https://www.ultrasoundcases.info", img_link['href'])
-                caption_div = img_link.find_next('div', class_='caption')
-                caption = caption_div.text.strip() if caption_div else ''
+        # Process images
+        for img_container in portfolio.find_all(['div', 'a'], class_=['col-md-6', 'image-container']):
+            # Look for image
+            img = img_container.find('img')
+            if img and img.get('src'):
+                img_url = urljoin("https://www.ultrasoundcases.info", img['src'])
+                print(f"Found image: {img_url}")
                 
-                print(f"Processing image: {img_url}")
+                # Look for caption
+                caption = img_container.find('div', class_='caption')
+                caption_text = caption.text.strip() if caption else ''
+                
                 # Download image
                 filepath = await download_file(session, img_url, "images")
                 if filepath:
                     case_data['images'].append(filepath)
-                    case_data['image_captions'].append(caption)
-                    print(f"Successfully downloaded image to: {filepath}")
-                else:
-                    print(f"Failed to download image: {img_url}")
-    else:
-        print("Warning: portfolio section not found")
+                    case_data['image_captions'].append(caption_text)
+                    print(f"Downloaded image to: {filepath}")
+                    if caption_text:
+                        print(f"Caption: {caption_text}")
+            
+            # Look for video
+            video = img_container.find('video')
+            if video:
+                video_src = video.find('source')
+                if video_src and video_src.get('src'):
+                    video_url = urljoin("https://www.ultrasoundcases.info", video_src['src'])
+                    print(f"Found video: {video_url}")
+                    
+                    # Download video
+                    filepath = await download_file(session, video_url, "videos")
+                    if filepath:
+                        case_data['videos'].append(filepath)
+                        print(f"Downloaded video to: {filepath}")
     
-    print(f"=== Completed Case Detail Extraction: {len(case_data['images'])} images downloaded ===\n")
+    print(f"=== Completed Case Detail Extraction ===")
+    print(f"Found {len(case_data['images'])} images and {len(case_data['videos'])} videos")
     return case_data
 
 async def get_case_links(soup):
@@ -451,7 +468,7 @@ async def main():
                                     case_data = await scrape_case_details(soup, session)
                                     
                                     if case_data:
-                                        # Write a row for each image
+                                        # Write to CSV
                                         for img_path, img_caption in zip(case_data['images'], case_data['image_captions']):
                                             row = {
                                                 "category": category['name'],
