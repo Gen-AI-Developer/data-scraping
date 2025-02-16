@@ -17,7 +17,6 @@ async def download_file(session, url, folder):
     try:
         async with session.get(url) as response:
             if response.status == 200:
-                # Extract filename from URL
                 filename = os.path.basename(urlparse(url).path)
                 if not filename:
                     filename = f"file_{hash(url)}"
@@ -26,6 +25,8 @@ async def download_file(session, url, folder):
                 async with aiofiles.open(filepath, 'wb') as f:
                     await f.write(await response.read())
                 return filepath
+            else:
+                print(f"Failed to download {url}: Status {response.status}")
     except Exception as e:
         print(f"Error downloading {url}: {str(e)}")
     return None
@@ -182,51 +183,301 @@ async def scrape_candidate_page(crawler, session, candidate_url):
     
     return cases
 
+async def scrape_case_details(soup, session):
+    """Extract all details from the company-details div"""
+    print("\n=== Starting Case Detail Extraction ===")
+    company_details = soup.find('div', class_='company-details')
+    if not company_details:
+        print("Warning: company-details div not found")
+        return None
+    
+    print("Found company-details div")
+    case_data = {
+        'title': '',
+        'info': '',
+        'clinical_info': '',
+        'patient_details': {},
+        'images': [],
+        'image_captions': [],
+        'videos': []
+    }
+    
+    # Extract title and info
+    title_section = company_details.find('div', class_='title-body')
+    if title_section:
+        case_data['title'] = title_section.find('h1').text.strip() if title_section.find('h1') else ''
+        info_div = title_section.find('div', class_='info')
+        case_data['info'] = info_div.text.strip() if info_div else ''
+        print(f"Found title: {case_data['title']}")
+    else:
+        print("Warning: title-body not found")
+    
+    # Extract clinical information
+    clinical_section = company_details.find('div', class_='about-details')
+    if clinical_section:
+        clinical_info = clinical_section.find('p')
+        case_data['clinical_info'] = clinical_info.text.strip() if clinical_info else ''
+        print("Found clinical information")
+    else:
+        print("Warning: about-details not found")
+    
+    # Extract patient details
+    patient_data = company_details.find('div', class_='patient-data')
+    if patient_data:
+        print("Found patient data section")
+        for li in patient_data.find_all('li'):
+            key = li.find('span').text.strip().rstrip(':')
+            value = li.text.replace(li.find('span').text, '').strip()
+            case_data['patient_details'][key] = value
+            print(f"Found patient detail: {key}: {value}")
+    else:
+        print("Warning: patient-data not found")
+    
+    # Extract images and their captions
+    portfolio = company_details.find('div', class_='portfolio')
+    if portfolio:
+        print("Found portfolio section")
+        image_links = portfolio.find_all('a', href=True)
+        print(f"Found {len(image_links)} image links")
+        
+        for img_link in image_links:
+            if 'jpg' in img_link['href'].lower() or 'png' in img_link['href'].lower():
+                img_url = urljoin("https://www.ultrasoundcases.info", img_link['href'])
+                caption_div = img_link.find_next('div', class_='caption')
+                caption = caption_div.text.strip() if caption_div else ''
+                
+                print(f"Processing image: {img_url}")
+                # Download image
+                filepath = await download_file(session, img_url, "images")
+                if filepath:
+                    case_data['images'].append(filepath)
+                    case_data['image_captions'].append(caption)
+                    print(f"Successfully downloaded image to: {filepath}")
+                else:
+                    print(f"Failed to download image: {img_url}")
+    else:
+        print("Warning: portfolio section not found")
+    
+    print(f"=== Completed Case Detail Extraction: {len(case_data['images'])} images downloaded ===\n")
+    return case_data
+
+async def get_case_links(soup):
+    """Extract all case links from the category page"""
+    print("\n=== Starting Case Link Extraction ===")
+    case_links = []
+    
+    # Try different possible containers
+    content_container = soup.find('div', class_='candidate-filter-result')
+    if not content_container:
+        print("Warning: candidate-filter-result not found, trying alternative containers...")
+        content_container = soup.find('div', class_='content-container')
+    
+    if content_container:
+        print("Found content container")
+        
+        # Try to find case items
+        case_items = content_container.find_all('div', class_='candidate')
+        if not case_items:
+            print("Warning: No items with class 'candidate' found, trying alternative classes...")
+            case_items = content_container.find_all('div', class_='case-item')
+        
+        print(f"Found {len(case_items)} case items")
+        
+        for case in case_items:
+            link = case.find('a', href=True)
+            if link:
+                case_url = urljoin("https://www.ultrasoundcases.info", link['href'])
+                case_title = link.text.strip()
+                print(f"Found case: {case_title} | URL: {case_url}")
+                case_links.append(case_url)
+    else:
+        print("Warning: No content container found")
+    
+    print(f"=== Completed Case Link Extraction: {len(case_links)} cases found ===\n")
+    return case_links
+
+async def get_category_links(soup):
+    """Extract all category links from the main page"""
+    print("\n=== Starting Category Link Extraction ===")
+    category_links = []
+    
+    # Look for the dropdown menu
+    dropdown = soup.find('div', class_='dropdown-menu')
+    if not dropdown:
+        print("Warning: Dropdown menu not found")
+        return category_links
+    
+    # Find all category titles (they have class 'dropdown-title')
+    categories = dropdown.find_all('a', class_='dropdown-title')
+    print(f"Found {len(categories)} main categories")
+    
+    for category in categories:
+        category_url = urljoin("https://www.ultrasoundcases.info", category['href'])
+        category_name = category.text.strip()
+        category_id = category.get('data-id', '')
+        
+        # Find all subcategories that follow this category until the next category
+        subcategories = []
+        current = category.find_next('a')
+        while current and 'dropdown-title' not in current.get('class', []):
+            if 'dropdown-item' in current.get('class', []):
+                subcat_url = urljoin("https://www.ultrasoundcases.info", current['href'])
+                subcat_name = current.text.strip()
+                subcat_id = current.get('data-id', '')
+                
+                subcategories.append({
+                    'url': subcat_url,
+                    'name': subcat_name,
+                    'id': subcat_id
+                })
+            current = current.find_next('a')
+        
+        category_links.append({
+            'url': category_url,
+            'name': category_name,
+            'id': category_id,
+            'subcategories': subcategories
+        })
+        
+        print(f"\nFound category: {category_name} | ID: {category_id}")
+        print(f"Category URL: {category_url}")
+        print(f"Found {len(subcategories)} subcategories:")
+        for subcat in subcategories:
+            print(f"  - {subcat['name']} | URL: {subcat['url']}")
+    
+    print(f"\n=== Completed Category Link Extraction: {len(category_links)} categories found ===\n")
+    return category_links
+
+async def get_subcategory_links(soup):
+    """Extract all subcategory links from a category page"""
+    print("\n=== Starting Subcategory Link Extraction ===")
+    subcategory_links = []
+    subcategories = soup.find_all('div', class_='subcategory-item')
+    if not subcategories:
+        print("Warning: No subcategory items found with class 'subcategory-item', trying alternative selectors")
+        subcategories = soup.find_all('div', class_='list-item')
+    
+    print(f"Found {len(subcategories)} subcategory containers")
+    
+    for subcat in subcategories:
+        link = subcat.find('a', href=True)
+        if link:
+            subcat_url = urljoin("https://www.ultrasoundcases.info", link['href'])
+            subcat_name = link.text.strip()
+            subcategory_links.append({
+                'url': subcat_url,
+                'name': subcat_name
+            })
+            print(f"Found subcategory: {subcat_name} | URL: {subcat_url}")
+    
+    print(f"=== Completed Subcategory Link Extraction: {len(subcategory_links)} subcategories found ===\n")
+    return subcategory_links
+
 async def main():
-    base_url = "https://www.ultrasoundcases.info/cases/abdomen-and-retroperitoneum/"
+    print("\n=== Starting Web Scraping Process ===")
+    base_url = "https://www.ultrasoundcases.info/cases/"
+    print(f"Base URL: {base_url}")
+    
+    # Create directories
+    Path("images").mkdir(exist_ok=True)
+    Path("videos").mkdir(exist_ok=True)
+    print("Created necessary directories")
     
     # CSV headers
     csv_headers = [
-        "organ", "candidate_title", "total_cases",
-        "case_title", "description", "image_paths", "video_paths"
+        "category", "subcategory", "title", "info", "clinical_info",
+        "patient_sex", "patient_age", "body_part",
+        "image_path", "image_caption"
     ]
     
-    async with AsyncWebCrawler() as crawler:
-        async with aiohttp.ClientSession() as session:
-            # Step 1-5: Get candidates and organ links
-            candidates, organ_links = await scrape_organ_cases(crawler, base_url)
-            
-            # Create/open CSV file
-            with open("ultrasound_cases_detailed.csv", "w", newline="", encoding="utf-8") as csvfile:
-                writer = csv.DictWriter(csvfile, fieldnames=csv_headers)
-                writer.writeheader()
+    # Create/open CSV file
+    with open("case_details.csv", "w", newline="", encoding="utf-8") as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=csv_headers)
+        writer.writeheader()
+        
+        async with AsyncWebCrawler() as crawler:
+            async with aiohttp.ClientSession() as session:
+                # Get the main page
+                result = await crawler.arun(
+                    url=base_url,
+                    config=CrawlerRunConfig(
+                        wait_until="networkidle"
+                    )
+                )
                 
-                # Process each candidate
-                for candidate in candidates:
-                    print(f"Processing candidate: {candidate['title']}")
+                soup = BeautifulSoup(result.html, 'html.parser')
+                categories = await get_category_links(soup)
+                
+                # Process each category and its subcategories
+                for category in categories:
+                    print(f"\nProcessing category: {category['name']}")
                     
-                    if candidate['link']:
-                        # Step 6-9: Scrape candidate page
-                        cases = await scrape_candidate_page(crawler, session, candidate['link'])
-                        
-                        # Step 10: Save to CSV
-                        for case in cases:
-                            row = {
-                                "organ": "Abdomen and Retroperitoneum",
-                                "candidate_title": candidate['title'],
-                                "total_cases": candidate['cases_count'],
-                                "case_title": case['title'],
-                                "description": case['description'],
-                                "image_paths": "|".join(case['image_paths']),
-                                "video_paths": "|".join(case['video_paths'])
-                            }
-                            writer.writerow(row)
-                            csvfile.flush()
-                    
-                    # Be nice to the server
-                    await asyncio.sleep(2)
-    
-    print("Scraping completed!")
+                    for subcategory in category['subcategories']:
+                        try:
+                            print(f"\nProcessing subcategory: {subcategory['name']}")
+                            
+                            # Get the subcategory page
+                            result = await crawler.arun(
+                                url=subcategory['url'],
+                                config=CrawlerRunConfig(
+                                    wait_until="networkidle"
+                                )
+                            )
+                            
+                            soup = BeautifulSoup(result.html, 'html.parser')
+                            
+                            # Debug print to see the HTML structure
+                            print("\nSubcategory page HTML structure:")
+                            print(soup.prettify()[:1000])  # Print first 1000 chars
+                            
+                            case_links = await get_case_links(soup)
+                            
+                            if not case_links:
+                                print("No cases found in this subcategory, might need to check HTML structure")
+                            
+                            # Process each case
+                            for case_url in case_links:
+                                try:
+                                    print(f"\nProcessing case: {case_url}")
+                                    
+                                    result = await crawler.arun(
+                                        url=case_url,
+                                        config=CrawlerRunConfig(
+                                            wait_until="networkidle"
+                                        )
+                                    )
+                                    
+                                    soup = BeautifulSoup(result.html, 'html.parser')
+                                    case_data = await scrape_case_details(soup, session)
+                                    
+                                    if case_data:
+                                        # Write a row for each image
+                                        for img_path, img_caption in zip(case_data['images'], case_data['image_captions']):
+                                            row = {
+                                                "category": category['name'],
+                                                "subcategory": subcategory['name'],
+                                                "title": case_data['title'],
+                                                "info": case_data['info'],
+                                                "clinical_info": case_data['clinical_info'],
+                                                "patient_sex": case_data['patient_details'].get('Sex', ''),
+                                                "patient_age": case_data['patient_details'].get('Age', ''),
+                                                "body_part": case_data['patient_details'].get('Body part', ''),
+                                                "image_path": img_path,
+                                                "image_caption": img_caption
+                                            }
+                                            writer.writerow(row)
+                                            csvfile.flush()
+                                    
+                                    # Be nice to the server
+                                    await asyncio.sleep(2)
+                                    
+                                except Exception as e:
+                                    print(f"Error processing case {case_url}: {str(e)}")
+                                    continue
+                                
+                        except Exception as e:
+                            print(f"Error processing subcategory {subcategory['name']}: {str(e)}")
+                            continue
 
 if __name__ == "__main__":
     asyncio.run(main())
