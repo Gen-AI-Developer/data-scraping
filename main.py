@@ -310,7 +310,11 @@ async def get_case_links(soup):
     else:
         print("Warning: No content container found")
     
-    print(f"=== Completed Case Link Extraction: {len(case_links)} cases found ===\n")
+    print(f"=== Completed Case Link Extraction: {len(case_links)} cases found ===")
+    print("Case URLs found:")
+    for url in case_links:
+        print(f"  - {url}")
+    print()
     return case_links
 
 async def get_category_links(soup):
@@ -450,7 +454,9 @@ async def main():
                             case_links = await get_case_links(soup)
                             
                             if not case_links:
-                                print("No cases found in this subcategory, might need to check HTML structure")
+                                print(f"No cases found in subcategory URL: {subcategory['url']}")
+                            else:
+                                print(f"Found {len(case_links)} cases in subcategory URL: {subcategory['url']}")
                             
                             # Process each case
                             for case_url in case_links:
