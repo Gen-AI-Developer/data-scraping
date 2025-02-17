@@ -43,10 +43,18 @@ async def extract_subcategories(html_content, category_name):
             subcat_list = section.find_next('ul')
             if subcat_list:
                 for item in subcat_list.find_all('li'):
-                    subcategories.append({
-                        'name': item.text.strip(),
-                        'parent_category': category_name
-                    })
+                    link = item.find('a')
+                    if link:
+                        url = link.get('href', '')
+                        # Ensure URL is absolute
+                        if url and not url.startswith('http'):
+                            url = f"https://www.ultrasoundcases.info{url}"
+                        
+                        subcategories.append({
+                            'name': item.text.strip(),
+                            'url': url,
+                            'parent_category': category_name
+                        })
     
     return subcategories
 
@@ -82,6 +90,7 @@ async def main():
                 print("\nSubcategories:")
                 for subcat in subcategories:
                     print(f"- {subcat['name']}")
+                    print(f"  URL: {subcat['url']}")
             else:
                 print("No subcategories found")
             
