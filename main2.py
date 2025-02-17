@@ -21,50 +21,34 @@ async def extract_main_categories(html_content):
             {
                 'name': cat['header'],
                 'url': f"https://www.ultrasoundcases.info/cases/{cat['listLocation']}/",
-                'category_id': cat['id']
+                'category_id': cat['id'],
+                'list_location': cat['listLocation']
             }
             for cat in categories
         ]
     except json.JSONDecodeError as e:
         print(f"Error parsing JSON: {e}")
-        print(f"JSON string found: {json_str[:200]}...")
         return []
 
-async def extract_subcases(html_content):
-    """Extract individual cases from a category page"""
+async def extract_subcategories(html_content, category_name):
+    """Extract subcategories from a category page"""
     soup = BeautifulSoup(html_content, 'html.parser')
-    cases = []
+    subcategories = []
     
-    # Find all case entries
-    case_entries = soup.find_all('article', class_='blog-grid')
+    # Find the category section
+    category_sections = soup.find_all('h4')
+    for section in category_sections:
+        if category_name in section.text:
+            # Get the list of subcategories that follows
+            subcat_list = section.find_next('ul')
+            if subcat_list:
+                for item in subcat_list.find_all('li'):
+                    subcategories.append({
+                        'name': item.text.strip(),
+                        'parent_category': category_name
+                    })
     
-    for entry in case_entries:
-        try:
-            # Extract case details
-            title_elem = entry.find('h3')
-            if title_elem and title_elem.find('a'):
-                title = title_elem.find('a').text.strip()
-                url = title_elem.find('a')['href']
-                
-                # Extract description if available
-                desc_elem = entry.find('p')
-                description = desc_elem.text.strip() if desc_elem else "No description available"
-                
-                # Extract author if available
-                author_elem = entry.find('div', class_='author')
-                author = author_elem.text.strip() if author_elem else "Unknown author"
-                
-                cases.append({
-                    'title': title,
-                    'url': f"https://www.ultrasoundcases.info{url}" if not url.startswith('http') else url,
-                    'description': description,
-                    'author': author
-                })
-        except Exception as e:
-            print(f"Error extracting case details: {e}")
-            continue
-            
-    return cases
+    return subcategories
 
 async def main():
     browser_config = BrowserConfig()
@@ -76,39 +60,32 @@ async def main():
     async with AsyncWebCrawler(config=browser_config) as crawler:
         # First get main categories
         result = await crawler.arun(
-            url="https://www.ultrasoundcases.info/",
+            url="https://www.ultrasoundcases.info/cases/peripheral-vessels/",
             config=run_config
         )
         
         main_categories = await extract_main_categories(result.html)
         
-        print("\nUltrasound Cases Categories and Subcases:")
+        print("\nUltrasound Cases Categories and Subcategories:")
         print("=" * 80)
         
-        # Visit each category URL and extract subcases
+        # Process each main category
         for category in main_categories:
-            print(f"\nCategory: {category['name']}")
+            print(f"\nMain Category: {category['name']}")
+            print(f"URL: {category['url']}")
             print("-" * 80)
             
-            # Crawl the category page
-            category_result = await crawler.arun(
-                url=category['url'],
-                config=run_config
-            )
+            # Extract subcategories
+            subcategories = await extract_subcategories(result.html, category['name'])
             
-            # Extract subcases
-            subcases = await extract_subcases(category_result.html)
-            
-            # Print subcases
-            if subcases:
-                for case in subcases:
-                    print(f"\nTitle: {case['title']}")
-                    print(f"URL: {case['url']}")
-                    print(f"Description: {case['description']}")
-                    print(f"Author: {case['author']}")
-                    print("-" * 40)
+            if subcategories:
+                print("\nSubcategories:")
+                for subcat in subcategories:
+                    print(f"- {subcat['name']}")
             else:
-                print("No cases found in this category")
+                print("No subcategories found")
+            
+            print("-" * 40)
             
             # Add a small delay between requests to be polite
             await asyncio.sleep(1)
