@@ -218,7 +218,7 @@ async def main():
             else:
                 print("No subcategories found")
             
-            print("-" * 40)
+            print("-" * 80)
 
 if __name__ == "__main__":
     asyncio.run(main())
