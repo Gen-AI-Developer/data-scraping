@@ -5,6 +5,8 @@ from bs4 import BeautifulSoup
 from crawl4ai import AsyncWebCrawler
 from crawl4ai.async_configs import BrowserConfig, CrawlerRunConfig
 import json
+import csv
+import re
 
 async def fetch_sitemap(url):
     """Fetch sitemap XML and save it to a file"""
@@ -62,68 +64,125 @@ def parse_sitemap(xml_content):
     
     return all_urls, digit_ending_urls
 
-async def extract_case_info(html_content):
-    """
-    Extract case information from the HTML content
-    """
+async def extract_case_info(html_content, url):
+    """Extract key information from a case page"""
     soup = BeautifulSoup(html_content, 'html.parser')
-    cases = []
     
-    # Try different class combinations to find the grid
-    grid = soup.find('div', class_='candidate-filter-result visible grid')
-    if not grid:
-        grid = soup.find('div', class_='candidate-filter-result')
-    if not grid:
-        print("Debug: HTML content length:", len(html_content))
-        print("Debug: First 500 chars of HTML:", html_content[:500])
-        return cases
+    # Initialize case info dictionary
+    case_info = {
+        'url': url,
+        'case_of_month_date': '',
+        'title': '',
+        'clinical_info': '',
+        'question': '',
+        'options': '',
+        'images_description': [],
+        'conclusion': '',
+        'details': {}
+    }
+    
+    try:
+        # Get Case of Month date
+        date_elem = soup.find('h2', string=re.compile(r'Case of Month date', re.I))
+        if date_elem:
+            case_info['case_of_month_date'] = date_elem.text.replace('Case of Month date :', '').strip()
+        
+        # Get title
+        title_elem = soup.find('h1')
+        if title_elem:
+            case_info['title'] = title_elem.text.strip()
+        
+        # Get Clinical Information
+        clinical_elem = soup.find('h3', string=re.compile('Clinical information', re.I))
+        if clinical_elem and clinical_elem.find_next('p'):
+            case_info['clinical_info'] = clinical_elem.find_next('p').text.strip()
+        
+        # Get Question and Options
+        question_elem = soup.find(string=re.compile(r'What would you do\?', re.I))
+        if question_elem:
+            case_info['question'] = question_elem.strip()
+            # Find options (A, B, C, D)
+            options = []
+            for option in soup.find_all('p', string=re.compile(r'^[A-D]\)')):
+                options.append(option.text.strip())
+            case_info['options'] = '\n'.join(options)
+        
+        # Get Images Description
+        images_section = soup.find('h3', string=re.compile('Ultrasound Images & Clips', re.I))
+        if images_section:
+            descriptions = []
+            for desc in images_section.find_next_siblings('p'):
+                if desc.text.strip():
+                    descriptions.append(desc.text.strip())
+            case_info['images_description'] = descriptions
+        
+        # Get Conclusion
+        conclusion_elem = soup.find('h3', string=re.compile('Conclusion', re.I))
+        if conclusion_elem and conclusion_elem.find_next('p'):
+            case_info['conclusion'] = conclusion_elem.find_next('p').text.strip()
+        
+        # Get Details
+        details_elem = soup.find('h3', string=re.compile('Details', re.I))
+        if details_elem:
+            details_text = details_elem.find_next('p').text.strip()
+            for line in details_text.split('\n'):
+                if ':' in line:
+                    key, value = line.split(':', 1)
+                    case_info['details'][key.strip()] = value.strip()
+    
+    except Exception as e:
+        print(f"Error extracting info from {url}: {e}")
+    
+    return case_info
 
-    # Find all grid items
-    case_items = grid.find_all('div', {'class': 'candidate half-grid'})
-    print(f"Found {len(case_items)} cases")
+async def process_urls():
+    """Process URLs from file and extract information"""
+    browser_config = BrowserConfig()
+    run_config = CrawlerRunConfig()
     
-    for item in case_items:
-        try:
-            # Get case number from data-id attribute
-            case_num = item.get('data-id', '')
-            
-            # Get title from the text content
-            title = item.text.strip()
-            
-            # Get URL from href attribute
-            url = item.get('href', '')
-            if url and not url.startswith('http'):
-                url = f"https://www.ultrasoundcases.info{url}"
-            
-            # Get thumbnail if available
-            thumbnail = item.find('img')
-            thumbnail_url = thumbnail.get('src', '') if thumbnail else ''
-            
-            cases.append({
-                'title': title,
-                'url': url,
-                'case_number': case_num,
-                'thumbnail_url': thumbnail_url
-            })
-            print(f"Debug: Extracted case {case_num}: {title}")
-        except Exception as e:
-            print(f"Error processing case item: {e}")
-            print(f"Item HTML: {item}")
+    # Configure browser
+    browser_config.javascript = True
+    browser_config.timeout = 30
+    run_config.wait_for_timeout = 5000
     
-    return cases
+    # Read URLs from file
+    with open('digit_ending_urls.txt', 'r') as f:
+        urls = [line.strip() for line in f if line.strip()]
+    
+    # Prepare CSV file
+    fieldnames = ['url', 'case_of_month_date', 'title', 'clinical_info', 'question', 
+                 'options', 'images_description', 'conclusion', 'details']
+    
+    with open('case_details.csv', 'w', newline='', encoding='utf-8') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        
+        # Process each URL
+        async with AsyncWebCrawler(config=browser_config) as crawler:
+            for i, url in enumerate(urls, 1):
+                print(f"Processing {i}/{len(urls)}: {url}")
+                
+                try:
+                    result = await crawler.arun(url=url, config=run_config)
+                    if result and result.html:
+                        case_info = await extract_case_info(result.html, url)
+                        # Convert lists and dicts to strings for CSV
+                        case_info['images_description'] = '\n'.join(case_info['images_description'])
+                        case_info['details'] = '; '.join(f"{k}: {v}" for k, v in case_info['details'].items())
+                        writer.writerow(case_info)
+                        print(f"✓ Extracted: {case_info['title']}")
+                    else:
+                        print(f"✗ Failed to fetch: {url}")
+                except Exception as e:
+                    print(f"✗ Error processing {url}: {e}")
+                
+                # Add small delay between requests
+                await asyncio.sleep(1)
 
 async def main():
-    print("Starting sitemap analysis...")
-    
-    # Fetch and save sitemap
-    sitemap_url = "https://www.ultrasoundcases.info/sitemap.xml"
-    sitemap_content = await fetch_sitemap(sitemap_url)
-    
-    # Analyze URLs
-    urls, digit_urls = parse_sitemap(sitemap_content)
-    
-    print(f"\nTotal URLs found: {len(urls)}")
-    print(f"URLs ending with digits: {len(digit_urls)}")
+    print("Starting case information extraction...")
+    await process_urls()
+    print("\nDone! Results saved to case_details.csv")
 
 if __name__ == "__main__":
     asyncio.run(main())
