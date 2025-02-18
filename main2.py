@@ -153,46 +153,6 @@ async def extract_cases(html_content):
     
     return cases, len(cases)
 
-async def extract_individual_cases(html_content):
-    """
-    Extract individual cases from a case list page.
-    
-    Args:
-        html_content (str): The HTML content of the case list page.
-        
-    Returns:
-        list: List of dictionaries containing individual case information
-    """
-    soup = BeautifulSoup(html_content, 'html.parser')
-    individual_cases = []
-    
-    # Find the filtered candidate wrapper div
-    wrapper = soup.find('div', class_='filtered-candidate-wrapper')
-    if wrapper:
-        # Find all case divs with class 'candidate'
-        case_items = wrapper.find_all('div', class_='candidate')
-        
-        for idx, item in enumerate(case_items, 1):
-            # Get the base URL from the parent case
-            base_url = item.get('href', '').rstrip('/')
-            
-            # Construct individual case URL
-            case_url = f"{base_url}/case-{idx}/"
-            if not case_url.startswith('http'):
-                case_url = f"https://www.ultrasoundcases.info{case_url}"
-            
-            # Get and clean the title
-            title = item.text.strip()
-            if 'Dialysis fistula' in title:
-                title = title.replace('Dialysis fistulaDialysis fistula', 'Dialysis fistula')
-            
-            individual_cases.append({
-                'title': title,
-                'url': case_url
-            })
-    
-    return individual_cases
-
 async def main():
     """
     Main async function to crawl and extract ultrasound case categories, subcategories,
@@ -252,22 +212,9 @@ async def main():
                         for case in cases:
                             print(f"    • Case {case['case_number']}: {case['title']}")
                             print(f"      {case['url']}")
-                            
-                            # Get and display individual cases
-                            case_result = await crawler.arun(
-                                url=case['url'],
-                                config=run_config
-                            )
-                            
-                            individual_cases = await extract_individual_cases(case_result.html)
-                            if individual_cases:
-                                print("\n      Individual Cases:")
-                                for idx, individual_case in enumerate(individual_cases, 1):
-                                    print(f"        {idx}. {individual_case['title']}")
-                                    print(f"           {individual_case['url']}")
-                                    print()  # Add blank line between cases
-                            
-                            await asyncio.sleep(1)  # Polite delay between requests
+                    
+                    # Add a small delay between requests
+                    await asyncio.sleep(1)
             else:
                 print("No subcategories found")
             
